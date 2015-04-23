@@ -9,9 +9,6 @@ import os
 import sys
 import glob
 import logging
-from sklearn import preprocessing
-from sklearn.externals import joblib
-from pprint import pprint
 
 class MyCaffe:
 
@@ -34,6 +31,7 @@ class MyCaffe:
         self.image_dims = (256, 256)
         self.raw_scale = 255
         self.channel_swap = (2, 1, 0)
+        self.gpu_flag = False
 
         self.labels = labels
         self.net = caffe.Classifier(
@@ -43,7 +41,8 @@ class MyCaffe:
             mean=self.mean,
             input_scale=None,
             raw_scale=self.raw_scale,
-            channel_swap=self.channel_swap
+            channel_swap=self.channel_swap,
+            gpu=self.gpu_flag
         )
 
         self.inputs = None
@@ -51,10 +50,10 @@ class MyCaffe:
 
     def load_img_files(self, img_file_or_dir, file_num_limit=10):
         # load image
-        # if img_file_or_dir.endswith('npy'):
-        #     self.logger.info('loading npy file: ', img_file_or_dir)
-        #     inputs = np.load(img_file_or_dir)
-        if os.path.isdir(img_file_or_dir):
+        if img_file_or_dir.endswith('npy'): #npy
+            self.logger.info('loading npy file: ', img_file_or_dir)
+            inputs = np.load(img_file_or_dir)
+        if os.path.isdir(img_file_or_dir): # directory(only load within batch size)
             image_extentions = ('jpg', 'jpeg', 'png', 'bmp', 'gif')
             self.inputs = []
             self.img_files = []
@@ -69,15 +68,17 @@ class MyCaffe:
                     self.img_files.append(img_file)
                 else:
                     self.logger.info('skipping: %s', img_file)
-        else:
+        else: # an image file
             self.logger.info('loading image file: %s', img_file_or_dir)
-            inputs = [caffe.io.load_image(img_file_or_dir)]
+            self.inputs = [caffe.io.load_image(img_file_or_dir)]
             self.img_files = [img_file_or_dir]
+            print self.inputs.shape
+            exit()
 
     def predict_by_imagenet(self, category_file, over_sample=False, top_k=3):
 
         if not self.inputs or not self.image_files:
-            Exception('You should run load_img_files(), first.')
+            raise Exception('You should run load_img_files(), first.')
 
         # predict
         # predict method returns probability score of category in each image.
@@ -93,18 +94,42 @@ class MyCaffe:
             for rank, (score, name) in enumerate(prediction[:top_k], start=1):
                 print('#%d | %s | %4.1f%%' % (rank, name, score * 100))
 
-    def get_features(self, layer_name='fc7', over_sample=False):
+    def get_features(self, data_dir, save_file,  layer_name='fc7', over_sample=False):
+        # get structure of network
+        n_batches, n_channels, height, width = self.net.blobs[layer_name].data.shape
+        self.logger.info('layer: %s n_batches: %d n_channels: %d height:%d, width: %d',
+                         layer_name, n_batches, n_channels, height, width)
+        n_dim = np.prod(self.net.blobs[layer_name].data.shape[1:]) # feature dimension
 
-        if not self.inputs or not self.image_files:
-            Exception('You should run load_img_files(), first.')
+        # read directories
+        self.logger.info("use images in %s", data_dir)
+        file_names = [ f for f in os.listdir(data_dir)]
+        data_len = len(file_names)
+        self.logger.info("data length: %s", data_len)
 
-        self.logger.info('predicting')
-        predictions = self.net.predict(self.inputs,oversample=over_sample)
+        all_features = np.array([]).reshape(0, n_dim) # empty matrix
+        self.logger.info("begin extracting features")
+        for start in xrange(0, data_len, n_batches):
+            self.logger.info("progress: %d / %d", start, data_len)
 
-        feature = self.net.blobs[layer_name].data[4]
-        flatten_feature = feature.flatten().tolist()
+            # read batch images
+            end = start + n_batches
+            if data_len <= end:
+                end = data_len
+            batch_files = file_names[start:end]
+            batch_data = [caffe.io.load_image(os.path.join(data_dir, f)) for f in batch_files]
+
+            # predict
+            predictions = self.net.predict(batch_data, oversample=over_sample)
+
+            # extruct features
+            features = self.net.blobs[layer_name].data.reshape(n_batches, n_dim)[0:end - start]
+            all_features = np.vstack([all_features, features])
+            
         # scaled_feature = preprocessing.scale(flatten_feature)
-        return self.net.blobs[layer_name].data.shape
+        self.logger.info("saving file to  %s", save_file)
+        np.save(save_file, all_features)
+        return all_features
 
     def create_lmdb(self):
         pass
