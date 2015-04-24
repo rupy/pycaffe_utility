@@ -9,6 +9,7 @@ import os
 import sys
 import glob
 import logging
+import matplotlib.pyplot as plt
 
 class MyCaffe:
 
@@ -74,7 +75,7 @@ class MyCaffe:
             self.img_files = [img_file_or_dir]
             print self.inputs.shape
 
-    def predict_by_imagenet(self, category_file, over_sample=False, top_k=3):
+    def predict_by_imagenet(self, category_file, over_sample=False, top_k=3, plot_flag=False):
 
         if not self.inputs or not self.img_files:
             raise Exception('You should run load_img_files(), first.')
@@ -83,6 +84,14 @@ class MyCaffe:
         # predict method returns probability score of category in each image.
         self.logger.info('predicting')
         predictions = self.net.predict(self.inputs,oversample=over_sample)
+        
+        if plot_flag:
+            for prediction in predictions:
+                plt.plot(predictions[0], "r")
+            plt.show()
+        
+        for prediction in predictions:
+            print "predicted class num: %d" %  prediction.argmax()
 
         # show result sorted by score
         categories = np.loadtxt(category_file, str, delimiter="\t")
@@ -129,6 +138,31 @@ class MyCaffe:
         self.logger.info("saving file to  %s", save_file)
         np.save(save_file, all_features)
         return all_features
+
+    def create_libsvm_format(self, FEATURE_FILE):
+        
+        # TODO: get category numbers
+        cat_num = 0
+        
+        features = np.load(FEATURE_FILE)
+        for feature in features:
+            print str(cat_num) + " ".join([ "%d:%s" % (i, f) for i, f in enumerate(feature)])
+
+    def print_structure(self):
+        for name, layer  in self.net.blobs.items():
+            print "%s, %s" % (name, layer.data.shape)
+
+    def print_params(self):
+
+        # The parameters are net.params['name'][0]..
+        for name, params  in self.net.params.items():
+            print "%s, %s" % (name, params[0].data.shape)
+
+    def print_biases(self):
+
+        # The biases are net.params['name'][1].
+        for name, params  in self.net.params.items():
+            print "%s, %s" % (name, params[1].data.shape)
 
     def create_lmdb(self):
         pass
