@@ -53,7 +53,7 @@ class MyCaffe:
         if img_file_or_dir.endswith('npy'): #npy
             self.logger.info('loading npy file: ', img_file_or_dir)
             inputs = np.load(img_file_or_dir)
-        if os.path.isdir(img_file_or_dir): # directory(only load within batch size)
+        if os.path.isdir(img_file_or_dir): # directory(maximum image num to be loaded is batch size)
             image_extentions = ('jpg', 'jpeg', 'png', 'bmp', 'gif')
             self.inputs = []
             self.img_files = []
@@ -73,11 +73,10 @@ class MyCaffe:
             self.inputs = [caffe.io.load_image(img_file_or_dir)]
             self.img_files = [img_file_or_dir]
             print self.inputs.shape
-            exit()
 
     def predict_by_imagenet(self, category_file, over_sample=False, top_k=3):
 
-        if not self.inputs or not self.image_files:
+        if not self.inputs or not self.img_files:
             raise Exception('You should run load_img_files(), first.')
 
         # predict
