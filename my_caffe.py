@@ -10,9 +10,9 @@ import sys
 import glob
 import logging
 import matplotlib.pyplot as plt
+from matplotlib import colors
 
 class MyCaffe:
-
 
     def __init__(self, model_file, pretrained_file, mean_file, labels=None):
 
@@ -28,11 +28,11 @@ class MyCaffe:
         # path/to/*_mean.npy
         self.mean_file = mean_file
 
-        self.mean = np.load(mean_file)
+        self.mean = np.load(mean_file).mean(1).mean(1)
         self.image_dims = (256, 256)
         self.raw_scale = 255
-        self.channel_swap = (2, 1, 0)
-        self.gpu_flag = False
+        self.channel_swap = (0, 2, 1)
+        # self.channel_swap = (2, 1, 0)
 
         self.labels = labels
         self.net = caffe.Classifier(
@@ -42,8 +42,7 @@ class MyCaffe:
             mean=self.mean,
             input_scale=None,
             raw_scale=self.raw_scale,
-            channel_swap=self.channel_swap,
-            gpu=self.gpu_flag
+            channel_swap=self.channel_swap
         )
 
         self.inputs = None
@@ -85,9 +84,12 @@ class MyCaffe:
         self.logger.info('predicting')
         predictions = self.net.predict(self.inputs,oversample=over_sample)
         
+        print colors.cnames.keys()
         if plot_flag:
-            for prediction in predictions:
-                plt.plot(predictions[0], "r")
+            for i, prediction in enumerate(predictions):
+                plt.subplot(len(predictions) / 4 + 1, 4, i)
+                plt.plot(predictions[i], c=colors.cnames.keys()[i])
+                print i
             plt.show()
         
         for prediction in predictions:
@@ -148,13 +150,44 @@ class MyCaffe:
         for feature in features:
             print str(cat_num) + " ".join([ "%d:%s" % (i, f) for i, f in enumerate(feature)])
 
+    def preprocess(self, file_path):
+        transformer = caffe.io.Transformer({'data': self.net.blobs['data'].data.shape})
+        transformer.set_transpose('data', self.channel_swap)
+        # mean pixel
+        transformer.set_mean('data', self.mean)
+        # the reference model operates on images in [0,255] range instead of [0,1]
+        transformer.set_raw_scale('data', self.raw_scale)
+        # the reference model has channels in BGR order instead of RGB
+        transformer.set_channel_swap('data', self.channel_swap)
+        # Classify the image by reshaping the net for the single input then doing the forward pass.
+        self.net.blobs['data'].reshape(1,3,227,227)
+        self.net.blobs['data'].data[...] = transformer.preprocess('data', caffe.io.load_image(file_path))
+        out = self.net.forward()
+        print("Predicted class is #{}.".format(out['prob'].argmax()))
+        
+    def vis_square(self, data, padsize=1, padval=0):
+        data -= data.min()
+        data /= data.max()
+        
+        # force the number of filters to be square
+        n = int(np.ceil(np.sqrt(data.shape[0])))
+        padding = ((0, n ** 2 - data.shape[0]), (0, padsize), (0, padsize)) + ((0, 0),) * (data.ndim - 3)
+        data = np.pad(data, padding, mode='constant', constant_values=(padval, padval))
+        
+        # tile the filters into an image
+        data = data.reshape((n, n) + data.shape[1:]).transpose((0, 2, 1, 3) + tuple(range(4, data.ndim + 1)))
+        data = data.reshape((n * data.shape[1], n * data.shape[3]) + data.shape[4:])
+        
+        plt.imshow(data)
+        plt.show()
+        
     def print_structure(self):
         for name, layer  in self.net.blobs.items():
             print "%s, %s" % (name, layer.data.shape)
 
     def print_params(self):
 
-        # The parameters are net.params['name'][0]..
+        # The parameters are net.params['name'][0].
         for name, params  in self.net.params.items():
             print "%s, %s" % (name, params[0].data.shape)
 
@@ -163,6 +196,13 @@ class MyCaffe:
         # The biases are net.params['name'][1].
         for name, params  in self.net.params.items():
             print "%s, %s" % (name, params[1].data.shape)
+
+    def plot_layer(self, layer_name):
+        feat = self.net.blobs[layer_name].data[0]
+        print feat.shape
+        self.vis_square(feat, padval=1)
+        # plt.imshow(feat[0])
+        # plt.show()
 
     def create_lmdb(self):
         pass
