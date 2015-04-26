@@ -157,13 +157,17 @@ class MyCaffe:
         print cat_arr.shape
         print all_features.shape
 
-    def create_libsvm_format(self, feature_file, category_file):
+    def create_libsvm_format(self, feature_file, category_file, save_file):
         
+        self.logger.info("loading features from %s and ategory from %s", feature_file, category_file)
         features = np.load(feature_file)
         cat_arr =  np.load(category_file)
 
-        for cat_num, feature in zip(cat_arr, features):
-            print str(cat_num) + " ".join([ "%d:%s" % (i, f) for i, f in enumerate(feature)])
+        self.logger.info("saving libsvm features to %s", save_file)
+        with open(save_file, 'w') as f:
+            for i, (cat_num, feature) in enumerate(zip(cat_arr, features)):
+                print "progress: %d / %d" % (i + 1, len(cat_arr))
+                f.write(str(cat_num) + " " + " ".join([ "%d:%s" % (i, feat) for i, feat in enumerate(feature)]) + "\n")
 
     def preprocess(self, file_path):
         transformer = caffe.io.Transformer({'data': self.net.blobs['data'].data.shape})
