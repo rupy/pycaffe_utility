@@ -157,7 +157,7 @@ class MyCaffe:
         print cat_arr.shape
         print all_features.shape
 
-    def create_libsvm_format(self, feature_file, category_file, save_file):
+    def create_libsvm_format(self, feature_file, category_file, save_file="all.txt", train_file="train.txt", test_file="test.txt"):
         
         self.logger.info("loading features from %s and ategory from %s", feature_file, category_file)
         features = np.load(feature_file)
@@ -167,6 +167,18 @@ class MyCaffe:
         with open(save_file, 'w') as f:
             for i, (cat_num, feature) in enumerate(zip(cat_arr, features)):
                 print "progress: %d / %d" % (i + 1, len(cat_arr))
+                f.write(str(cat_num) + " " + " ".join([ "%d:%s" % (i, feat) for i, feat in enumerate(feature)]) + "\n")
+
+        self.logger.info("saving libsvm features to %s", train_file)
+        with open(train_file, 'w') as f:
+            for i, (cat_num, feature) in enumerate(zip(cat_arr[::2], features[::2])):
+                print "progress: %d / %d"% (i + 1, len(cat_arr[::2]))
+                f.write(str(cat_num) + " " + " ".join([ "%d:%s" % (i, feat) for i, feat in enumerate(feature)]) + "\n")
+
+        self.logger.info("saving libsvm features to %s", test_file)
+        with open(test_file, 'w') as f:
+            for i, (cat_num, feature) in enumerate(zip(cat_arr[1::2], features[1::2])):
+                print "progress: %d / %d"% (i + 1, len(cat_arr[1::2]))
                 f.write(str(cat_num) + " " + " ".join([ "%d:%s" % (i, feat) for i, feat in enumerate(feature)]) + "\n")
 
     def preprocess(self, file_path):
