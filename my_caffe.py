@@ -11,7 +11,9 @@ import glob
 import logging
 import matplotlib.pyplot as plt
 from matplotlib import colors
-
+# import caffe.draw
+from google.protobuf import text_format
+from caffe.proto import caffe_pb2
 class MyCaffe:
 
     def __init__(self, model_file, pretrained_file, mean_file, labels=None):
@@ -32,7 +34,6 @@ class MyCaffe:
         self.image_dims = (256, 256)
         self.raw_scale = 255
         self.channel_swap = (0, 2, 1)
-        # self.channel_swap = (2, 1, 0)
 
         self.labels = labels
         self.net = caffe.Classifier(
@@ -74,7 +75,7 @@ class MyCaffe:
             self.img_files = [img_file_or_dir]
             print self.inputs.shape
 
-    def predict_by_imagenet(self, category_file, over_sample=False, top_k=3, plot_flag=False):
+    def predict_by_imagenet(self, category_file=None, over_sample=False, top_k=3, plot_flag=False):
 
         if not self.inputs or not self.img_files:
             raise Exception('You should run load_img_files(), first.')
@@ -104,50 +105,64 @@ class MyCaffe:
             for rank, (score, name) in enumerate(prediction[:top_k], start=1):
                 print('#%d | %s | %4.1f%%' % (rank, name, score * 100))
 
-    def get_features(self, data_dir, save_file,  layer_name='fc7', over_sample=False):
+    def get_features(self, data_dir, save_file, cat_file,  layer_name='fc7', over_sample=False):
+
+        self.logger.info("begin extracting features")
         # get structure of network
-        n_batches, n_channels, height, width = self.net.blobs[layer_name].data.shape
-        self.logger.info('layer: %s n_batches: %d n_channels: %d height:%d, width: %d',
-                         layer_name, n_batches, n_channels, height, width)
+        n_batches, n_channels = self.net.blobs[layer_name].data.shape
+        self.logger.info('layer: %s n_batches: %d n_channels: %d', layer_name, n_batches, n_channels)
         n_dim = np.prod(self.net.blobs[layer_name].data.shape[1:]) # feature dimension
 
-        # read directories
-        self.logger.info("use images in %s", data_dir)
-        file_names = [ f for f in os.listdir(data_dir)]
-        data_len = len(file_names)
-        self.logger.info("data length: %s", data_len)
+        # read categories
+        self.logger.info("data dir is %s", data_dir)
+        category_dirs = [ f for f in os.listdir(data_dir)]
 
         all_features = np.array([]).reshape(0, n_dim) # empty matrix
-        self.logger.info("begin extracting features")
-        for start in xrange(0, data_len, n_batches):
-            self.logger.info("progress: %d / %d", start, data_len)
+        cat_list = []
+        for i, category_dir in enumerate(category_dirs):
 
-            # read batch images
-            end = start + n_batches
-            if data_len <= end:
-                end = data_len
-            batch_files = file_names[start:end]
-            batch_data = [caffe.io.load_image(os.path.join(data_dir, f)) for f in batch_files]
-
-            # predict
-            predictions = self.net.predict(batch_data, oversample=over_sample)
-
-            # extruct features
-            features = self.net.blobs[layer_name].data.reshape(n_batches, n_dim)[0:end - start]
-            all_features = np.vstack([all_features, features])
+            # read data
+            self.logger.info("category: <%s> (%d / %d)", category_dir, i + 1, len(category_dirs))
+            category_path = os.path.join(data_dir, category_dir)
+            file_names = [ f for f in os.listdir(category_path)]
+            data_num = len(file_names)
+            self.logger.info("data num: %s", data_num)
+            cat_list.extend([i] * data_num)
             
-        # scaled_feature = preprocessing.scale(flatten_feature)
-        self.logger.info("saving file to  %s", save_file)
-        np.save(save_file, all_features)
-        return all_features
+            for start in xrange(0, data_num, n_batches):
+                self.logger.info("progress: %d / %d", start + 1, data_num)
+                
+                # read batch images
+                end = start + n_batches
+                if data_num <= end:
+                    end = data_num
+                
+                batch_files = file_names[start:end]
+                batch_data = [caffe.io.load_image(os.path.join(data_dir, category_dir, f)) for f in batch_files]
+                
+                # predict
+                predictions = self.net.predict(batch_data, oversample=over_sample)
+                
+                # extruct features
+                features = self.net.blobs[layer_name].data.reshape(n_batches, n_dim)[0:end - start]
+                all_features = np.vstack([all_features, features])
+            self.logger.info("progress: %d / %d", end, data_num)
 
-    def create_libsvm_format(self, FEATURE_FILE):
+        # scaled_feature = preprocessing.scale(flatten_feature)
+        self.logger.info("saving features to  %s", save_file)
+        np.save(save_file, all_features)
+        self.logger.info("saving category to  %s", cat_file)
+        cat_arr = np.array(cat_list)
+        np.save(cat_file, cat_arr)
+        print cat_arr.shape
+        print all_features.shape
+
+    def create_libsvm_format(self, feature_file, category_file):
         
-        # TODO: get category numbers
-        cat_num = 0
-        
-        features = np.load(FEATURE_FILE)
-        for feature in features:
+        features = np.load(feature_file)
+        cat_arr =  np.load(category_file)
+
+        for cat_num, feature in zip(cat_arr, features):
             print str(cat_num) + " ".join([ "%d:%s" % (i, f) for i, f in enumerate(feature)])
 
     def preprocess(self, file_path):
@@ -203,6 +218,15 @@ class MyCaffe:
         self.vis_square(feat, padval=1)
         # plt.imshow(feat[0])
         # plt.show()
+
+    def draw_net(self, out_img_file):
+        net = caffe_pb2.NetParameter()
+        text_format.Merge(open(self.model_file).read(), net)
+        print('Drawing net to %s' % out_img_file)
+        caffe.draw.draw_net_to_file(net, out_img_file)
+
+    def fine_tuning(self, solver_file):
+        pass
 
     def create_lmdb(self):
         pass
