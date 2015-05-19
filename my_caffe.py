@@ -11,9 +11,13 @@ import glob
 import logging
 import matplotlib.pyplot as plt
 from matplotlib import colors
-# import caffe.draw
 from google.protobuf import text_format
 from caffe.proto import caffe_pb2
+from sklearn.svm import SVC, LinearSVC
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
+import itertools
+
 class MyCaffe:
 
     def __init__(self, model_file, pretrained_file, mean_file, labels=None):
@@ -31,9 +35,9 @@ class MyCaffe:
         self.mean_file = mean_file
 
         self.mean = np.load(mean_file).mean(1).mean(1)
-        self.image_dims = (256, 256)
+        self.image_dims = None
         self.raw_scale = 255
-        self.channel_swap = (0, 2, 1)
+        self.channel_swap = (2, 1, 0)
 
         self.labels = labels
         self.net = caffe.Classifier(
@@ -45,6 +49,7 @@ class MyCaffe:
             raw_scale=self.raw_scale,
             channel_swap=self.channel_swap
         )
+        caffe.set_mode_gpu()
 
         self.inputs = None
         self.image_files = None
@@ -105,17 +110,20 @@ class MyCaffe:
             for rank, (score, name) in enumerate(prediction[:top_k], start=1):
                 print('#%d | %s | %4.1f%%' % (rank, name, score * 100))
 
-    def get_features(self, data_dir, save_file, cat_file,  layer_name='fc7', over_sample=False):
+    def get_features(self, data_dir, save_file, cat_file,  layer_name='fc6wi', n_batches=None):
 
         self.logger.info("begin extracting features")
         # get structure of network
-        n_batches, n_channels = self.net.blobs[layer_name].data.shape
-        self.logger.info('layer: %s n_batches: %d n_channels: %d', layer_name, n_batches, n_channels)
+        n_inputs, n_channels = self.net.blobs[layer_name].data.shape
+        if n_batches is None:
+            n_batches = n_inputs
+
+        self.logger.info('layer: %s n_inputs: %d n_batches: %d n_channels: %d', layer_name, n_inputs, n_batches, n_channels)
         n_dim = np.prod(self.net.blobs[layer_name].data.shape[1:]) # feature dimension
 
         # read categories
         self.logger.info("data dir is %s", data_dir)
-        category_dirs = [ f for f in os.listdir(data_dir)]
+        category_dirs = sorted([ f for f in os.listdir(data_dir)])
 
         all_features = np.array([]).reshape(0, n_dim) # empty matrix
         cat_list = []
@@ -124,7 +132,7 @@ class MyCaffe:
             # read data
             self.logger.info("category: <%s> (%d / %d)", category_dir, i + 1, len(category_dirs))
             category_path = os.path.join(data_dir, category_dir)
-            file_names = [ f for f in os.listdir(category_path)]
+            file_names = sorted([f for f in os.listdir(category_path)])
             data_num = len(file_names)
             self.logger.info("data num: %s", data_num)
             cat_list.extend([i] * data_num)
@@ -141,10 +149,12 @@ class MyCaffe:
                 batch_data = [caffe.io.load_image(os.path.join(data_dir, category_dir, f)) for f in batch_files]
                 
                 # predict
-                predictions = self.net.predict(batch_data, oversample=over_sample)
+                predictions = self.net.predict(batch_data, oversample=False)
                 
                 # extruct features
-                features = self.net.blobs[layer_name].data.reshape(n_batches, n_dim)[0:end - start]
+                features = self.net.blobs[layer_name].data.reshape(n_inputs, n_dim)[0:end - start]
+                # features = [self.net.blobs[layer_name].data.reshape(n_inputs, n_dim)[4]]
+                # features = [self.net.blobs[layer_name].data[0].flatten().tolist()]
                 all_features = np.vstack([all_features, features])
             self.logger.info("progress: %d / %d", end, data_num)
 
@@ -157,29 +167,77 @@ class MyCaffe:
         print cat_arr.shape
         print all_features.shape
 
-    def create_libsvm_format(self, feature_file, category_file, save_file="all.txt", train_file="train.txt", test_file="test.txt"):
+    def create_libsvm_format(self, feature_file, category_file, save_file="all.txt", train_file="train.txt", test_file="test.txt", max_train_num=30, max_test_num=30):
         
-        self.logger.info("loading features from %s and ategory from %s", feature_file, category_file)
+        self.logger.info("loading features from %s and category from %s", feature_file, category_file)
         features = np.load(feature_file)
         cat_arr =  np.load(category_file)
-
+        
         self.logger.info("saving libsvm features to %s", save_file)
         with open(save_file, 'w') as f:
             for i, (cat_num, feature) in enumerate(zip(cat_arr, features)):
-                print "progress: %d / %d" % (i + 1, len(cat_arr))
-                f.write(str(cat_num) + " " + " ".join([ "%d:%s" % (i, feat) for i, feat in enumerate(feature)]) + "\n")
+                self.logger.info("progress: %d / %d", i + 1, len(cat_arr))
+                f.write(str(cat_num) + " " + " ".join([ "%d:%s" % (j + 1, feat) for j, feat in enumerate(feature)]) + "\n")
 
-        self.logger.info("saving libsvm features to %s", train_file)
-        with open(train_file, 'w') as f:
-            for i, (cat_num, feature) in enumerate(zip(cat_arr[::2], features[::2])):
-                print "progress: %d / %d"% (i + 1, len(cat_arr[::2]))
-                f.write(str(cat_num) + " " + " ".join([ "%d:%s" % (i, feat) for i, feat in enumerate(feature)]) + "\n")
+        self.logger.info("max_train_num: %d max_test_num: %d", max_train_num, max_test_num)
+        self.logger.info("saving libsvm features to train_file:%s & test_file: %s", train_file, test_file)
+        with open(train_file, 'w') as f1:
+            with open(test_file, 'w') as f2:
+                cum = 0
+                for k, g in itertools.groupby(cat_arr):
+                    cat_len = len(list(g))
+                    start = cum
+                    end = start + cat_len
+                    for i, (cat_num, feature) in enumerate(zip(cat_arr[start:end], features[start:end])):
 
-        self.logger.info("saving libsvm features to %s", test_file)
-        with open(test_file, 'w') as f:
-            for i, (cat_num, feature) in enumerate(zip(cat_arr[1::2], features[1::2])):
-                print "progress: %d / %d"% (i + 1, len(cat_arr[1::2]))
-                f.write(str(cat_num) + " " + " ".join([ "%d:%s" % (i, feat) for i, feat in enumerate(feature)]) + "\n")
+                        if i < max_train_num:
+                            self.logger.info("progress: %d / %d (train)", start + i + 1, len(cat_arr))
+                            f1.write(str(cat_num) + " " + " ".join([ "%d:%s" % (j + 1, feat) for j, feat in enumerate(feature)]) + "\n")
+                        elif max_train_num <= i and i < (max_train_num + max_test_num):
+                            self.logger.info("progress: %d / %d (test)", start + i + 1, len(cat_arr))
+                            f2.write(str(cat_num) + " " + " ".join([ "%d:%s" % (j + 1, feat) for j, feat in enumerate(feature)]) + "\n")
+                        else:
+                            self.logger.info("progress: %d - %d / %d (skip)", start + i + 1, end, len(cat_arr))
+                            break
+                    cum = end
+
+    def train_by_lbsvm(self, feature_file, category_file, max_train_num=30, max_test_num=30):
+
+        self.logger.info("loading features from %s and category from %s", feature_file, category_file)
+        features = np.load(feature_file)
+        cat_arr =  np.load(category_file)
+
+        self.logger.info("creating train & test data")
+        cum = 0
+        train_feat = np.array([]).reshape(0, features.shape[1])
+        test_feat = np.array([]).reshape(0, features.shape[1])
+        train_cat = np.array([])
+        test_cat = np.array([])
+        for k, g in itertools.groupby(cat_arr):
+            cat_len = len(list(g))
+            train_start = cum
+            train_end = train_start + max_train_num
+            test_start = train_end
+            test_end = train_start + cat_len
+            if test_end > train_start + max_train_num + max_test_num:
+                test_end = train_start + max_train_num + max_test_num
+
+            train_feat = np.vstack([train_feat, features[train_start:train_end]])
+            test_feat = np.vstack([test_feat, features[test_start:test_end]])
+            train_cat = np.append(train_cat, cat_arr[train_start:train_end])
+            test_cat = np.append(test_cat, cat_arr[test_start:test_end])
+            cum = train_start + cat_len
+        
+        self.logger.info("train_feature is %s", train_feat.shape)
+        self.logger.info("test_feature is %s", test_feat.shape)
+        self.logger.info("train_cat is %s", train_cat.shape)
+        self.logger.info("test_cat is %s", test_cat.shape)
+
+        self.logger.info("training")
+        clf = LinearSVC()
+        clf.fit(train_feat, train_cat)
+        self.logger.info("testing")
+        print clf.score(test_feat, test_cat)
 
     def preprocess(self, file_path):
         transformer = caffe.io.Transformer({'data': self.net.blobs['data'].data.shape})
